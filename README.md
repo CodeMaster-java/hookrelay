@@ -15,7 +15,8 @@ failing lands in a dead-letter queue instead of disappearing.
 ## Install
 
 ```bash
-pip install hookrelay[fastapi,postgres]   # or [redis] instead of [postgres]
+pip install hookrelay[fastapi,postgres]   # or [redis] / [sqlite] instead of [postgres]
+pip install hookrelay[metrics]            # optional: Prometheus metrics for Worker
 ```
 
 ## Quickstart (FastAPI + Postgres)
@@ -50,9 +51,13 @@ project manages schema through Alembic.
 
 - **Backend**: stores events and decides what's due for (re)processing.
   `PostgresBackend` and `RedisBackend` are safe for concurrent workers;
-  `MemoryBackend` is for local development and tests.
+  `SQLiteBackend` is safe within a single process; `MemoryBackend` is for
+  local development and tests.
 - **Worker**: polls the backend, calls your handler, and acks or fails the
-  event based on whether the handler raised.
+  event based on whether the handler raised. `Worker(..., concurrency=N)`
+  runs up to `N` handlers from the same claimed batch at once, bounded by an
+  `asyncio.Semaphore`; each event is still individually acked or failed, so
+  the retry and dead-letter contract doesn't change.
 - **RetryPolicy**: exponential backoff with jitter (`base_delay * multiplier
   ** attempt`, capped at `max_delay`), shared by every backend so retry
   behavior doesn't depend on which one you picked.
@@ -61,28 +66,67 @@ project manages schema through Alembic.
   delivery with the same key is a no-op.
 - **Dead-letter queue**: once `max_attempts` is exhausted, an event moves to
   `EventStatus.DEAD_LETTER`. Inspect it with `backend.list_dead_letters()`
-  and retry it manually with `backend.requeue_dead_letter(event_id)`.
+  and retry it manually with `backend.requeue_dead_letter(event_id)`, or
+  from the command line with `hookrelay dead-letters list|requeue` (see
+  below).
+- **Metrics**: pass a `WorkerMetrics` implementation to `Worker(...,
+  metrics=...)` for counters of processed, retried, and dead-lettered events
+  plus a handler-duration histogram. `hookrelay.metrics.PrometheusMetrics`
+  is a ready-made one (requires the `metrics` extra); implement the
+  `WorkerMetrics` protocol yourself to plug into anything else.
 
 ## Choosing a backend
 
-| | Postgres | Redis | Memory |
-|---|---|---|---|
-| Multiple workers | Yes (`SELECT ... FOR UPDATE SKIP LOCKED`) | Yes, for modest concurrency | No |
-| Recovers a worker that crashes mid-processing | Yes | No (event stays `processing`) | No |
-| Extra infra required | Postgres (you probably already have it) | Redis | None |
+| | Postgres | Redis | SQLite | Memory |
+|---|---|---|---|---|
+| Multiple workers | Yes (`SELECT ... FOR UPDATE SKIP LOCKED`) | Yes, for modest concurrency | No (single process only) | No |
+| Recovers a worker that crashes mid-processing | Yes | Yes, call `reap_stale_claims()` periodically | No | No |
+| Extra infra required | Postgres (you probably already have it) | Redis | None (a local file) | None |
 
 If you're unsure, start with Postgres: you likely already run one, and it
-gives you the strongest guarantees.
+gives you the strongest guarantees. `SQLiteBackend` is a good fit for a
+single-process deployment or script where standing up Postgres or Redis just
+for retry bookkeeping isn't worth it.
+
+## Maintenance
+
+Two housekeeping operations are opt-in: hookrelay never runs them on its own,
+so wire them into whatever periodic task runner you already use (a cron job,
+an `asyncio` task, ...).
+
+- **`RedisBackend.reap_stale_claims()`**: a claimed event carries a lease
+  (`claim_lease_seconds`, default 300). If the worker that claimed it
+  crashes before acking or failing it, the event is stuck until you call
+  `reap_stale_claims()`, which requeues it (or dead-letters it, if that was
+  its last attempt) exactly like any other failure. Call it every
+  `claim_lease_seconds / 2` or so.
+- **`PostgresBackend.purge()` / `SQLiteBackend.purge()`**: successful and
+  dead-lettered events stay in the table indefinitely otherwise. Call
+  `backend.purge(older_than=some_datetime)` periodically to delete them past
+  a retention window you choose.
+
+## CLI
+
+Installing hookrelay also installs a `hookrelay` command for inspecting and
+recovering dead-lettered events against a running deployment:
+
+```bash
+hookrelay dead-letters list --backend postgresql+asyncpg://user:pass@localhost/db
+hookrelay dead-letters requeue <event-id> --backend redis://localhost:6379/0
+```
+
+`--backend` accepts a Postgres, Redis, or SQLite URL; the CLI picks the
+matching backend implementation from its scheme and only needs that
+backend's extra installed.
 
 ## Known limitations
 
-- `RedisBackend` has no stale-claim recovery: if a worker dies after claiming
-  an event but before acking or failing it, that event stays `processing`
-  forever. `PostgresBackend` doesn't have this problem because claims aren't
-  tied to a specific worker's lifetime beyond the transaction.
-- There's no built-in dashboard for dead-letter events; `list_dead_letters()`
-  and `requeue_dead_letter()` are meant to be wired into your own admin
-  tooling.
+- There's no built-in dashboard for dead-letter events; `list_dead_letters()`,
+  `requeue_dead_letter()`, and the `hookrelay dead-letters` CLI are meant to
+  be wired into your own admin tooling, not to replace it.
+- `SQLiteBackend` is safe for concurrent calls within one process (guarded
+  by an internal lock) but not for multiple worker processes writing to the
+  same database file; use `PostgresBackend` if you need that.
 
 ## Roadmap
 
