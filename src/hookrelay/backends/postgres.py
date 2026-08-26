@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -13,7 +14,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
-    func,
+    delete,
     select,
     update,
 )
@@ -22,6 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from hookrelay.backends.base import Backend, apply_failure
+from hookrelay.exceptions import EventNotFoundError
 from hookrelay.models import EventStatus, WebhookEvent
 from hookrelay.retry import RetryPolicy
 
@@ -124,18 +126,18 @@ class PostgresBackend(Backend):
         stmt = (
             update(events_table)
             .where(events_table.c.id == event_id)
-            .values(status=EventStatus.SUCCESS.value, updated_at=func.now())
+            .values(status=EventStatus.SUCCESS.value, updated_at=datetime.now(timezone.utc))
         )
         async with self._engine.begin() as conn:
             await conn.execute(stmt)
 
-    async def fail(self, event_id: str, error: str) -> None:
+    async def fail(self, event_id: str, error: str) -> WebhookEvent:
         async with self._engine.begin() as conn:
             row = (
                 await conn.execute(select(events_table).where(events_table.c.id == event_id))
             ).first()
             if row is None:
-                return
+                raise EventNotFoundError(event_id)
             updated_event = apply_failure(_row_to_event(row), error, self.retry_policy)
             await conn.execute(
                 update(events_table)
@@ -148,6 +150,7 @@ class PostgresBackend(Backend):
                     updated_at=updated_event.updated_at,
                 )
             )
+            return updated_event
 
     async def list_dead_letters(self, limit: int = 100, offset: int = 0) -> list[WebhookEvent]:
         stmt = (
@@ -178,3 +181,20 @@ class PostgresBackend(Backend):
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return result.rowcount > 0
+
+    async def purge(
+        self,
+        older_than: datetime,
+        statuses: Sequence[EventStatus] = (EventStatus.SUCCESS, EventStatus.DEAD_LETTER),
+    ) -> int:
+        """Deletes events in one of `statuses` last updated before `older_than`.
+        Returns how many rows were removed. Call this periodically yourself
+        (hookrelay does not run it automatically) to keep a long-running
+        deployment's table from growing without bound."""
+        stmt = delete(events_table).where(
+            events_table.c.status.in_([s.value for s in statuses]),
+            events_table.c.updated_at < older_than,
+        )
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return result.rowcount

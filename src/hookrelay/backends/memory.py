@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from hookrelay.backends.base import Backend, apply_failure
+from hookrelay.exceptions import EventNotFoundError
 from hookrelay.models import EventStatus, WebhookEvent
 from hookrelay.retry import RetryPolicy
 
@@ -53,11 +54,14 @@ class MemoryBackend(Backend):
             if event is not None:
                 self._events[event_id] = event.model_copy(update={"status": EventStatus.SUCCESS})
 
-    async def fail(self, event_id: str, error: str) -> None:
+    async def fail(self, event_id: str, error: str) -> WebhookEvent:
         async with self._lock:
             event = self._events.get(event_id)
-            if event is not None:
-                self._events[event_id] = apply_failure(event, error, self.retry_policy)
+            if event is None:
+                raise EventNotFoundError(event_id)
+            updated = apply_failure(event, error, self.retry_policy)
+            self._events[event_id] = updated
+            return updated
 
     async def list_dead_letters(self, limit: int = 100, offset: int = 0) -> list[WebhookEvent]:
         async with self._lock:

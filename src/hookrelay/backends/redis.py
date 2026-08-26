@@ -6,6 +6,7 @@ from typing import cast
 from redis.asyncio import Redis
 
 from hookrelay.backends.base import Backend, apply_failure
+from hookrelay.exceptions import EventNotFoundError
 from hookrelay.models import EventStatus, WebhookEvent
 from hookrelay.retry import RetryPolicy
 
@@ -16,9 +17,11 @@ class RedisBackend(Backend):
     """Redis-backed implementation.
 
     Suitable for a small number of workers: claiming relies on `ZREM` being atomic
-    per member, which guarantees an event is only ever claimed once, but there is no
-    stale-claim recovery if a worker crashes mid-processing after claiming an event.
-    For that guarantee, or for very high worker concurrency, prefer PostgresBackend.
+    per member, which guarantees an event is only ever claimed once. A claimed event
+    is given a lease of `claim_lease_seconds`; if the worker that claimed it crashes
+    before acking or failing it, the event stays claimable again only after you call
+    `reap_stale_claims()`, which hookrelay does not do on its own. For very high
+    worker concurrency, prefer PostgresBackend.
     """
 
     def __init__(
@@ -26,10 +29,12 @@ class RedisBackend(Backend):
         redis: Redis,
         retry_policy: RetryPolicy | None = None,
         namespace: str = "hookrelay",
+        claim_lease_seconds: float = 300.0,
     ) -> None:
         super().__init__(retry_policy)
         self._redis = redis
         self._namespace = namespace
+        self._claim_lease_seconds = claim_lease_seconds
 
     def _event_key(self, event_id: str) -> str:
         return f"{self._namespace}:event:{event_id}"
@@ -42,8 +47,16 @@ class RedisBackend(Backend):
         return f"{self._namespace}:schedule"
 
     @property
+    def _processing_key(self) -> str:
+        return f"{self._namespace}:processing"
+
+    @property
     def _dead_letter_key(self) -> str:
         return f"{self._namespace}:dead_letter"
+
+    @staticmethod
+    def _decode(raw: bytes | str) -> str:
+        return raw.decode() if isinstance(raw, bytes) else raw
 
     async def _get_event(self, event_id: str) -> WebhookEvent | None:
         data = await self._redis.get(self._event_key(event_id))
@@ -67,14 +80,17 @@ class RedisBackend(Backend):
         return True
 
     async def claim_due(self, limit: int) -> list[WebhookEvent]:
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(timezone.utc)
         candidate_ids = cast(
             list[bytes | str],
-            await self._redis.zrangebyscore(self._schedule_key, min=0, max=now, start=0, num=limit),
+            await self._redis.zrangebyscore(
+                self._schedule_key, min=0, max=now.timestamp(), start=0, num=limit
+            ),
         )
         claimed: list[WebhookEvent] = []
+        lease_expires_at = now.timestamp() + self._claim_lease_seconds
         for raw_id in candidate_ids:
-            event_id = raw_id.decode() if isinstance(raw_id, bytes) else raw_id
+            event_id = self._decode(raw_id)
             removed = await self._redis.zrem(self._schedule_key, event_id)
             if not removed:
                 continue  # another worker claimed it between the read and this ZREM
@@ -83,16 +99,19 @@ class RedisBackend(Backend):
                 continue
             processing_event = event.model_copy(update={"status": EventStatus.PROCESSING})
             await self._save_event(processing_event)
+            await self._redis.zadd(self._processing_key, {event_id: lease_expires_at})
             claimed.append(processing_event)
         return claimed
 
     async def ack(self, event_id: str) -> None:
+        await self._redis.zrem(self._processing_key, event_id)
         await self._redis.delete(self._event_key(event_id))
 
-    async def fail(self, event_id: str, error: str) -> None:
+    async def fail(self, event_id: str, error: str) -> WebhookEvent:
+        await self._redis.zrem(self._processing_key, event_id)
         event = await self._get_event(event_id)
         if event is None:
-            return
+            raise EventNotFoundError(event_id)
         updated_event = apply_failure(event, error, self.retry_policy)
         await self._save_event(updated_event)
         if updated_event.status is EventStatus.DEAD_LETTER:
@@ -103,6 +122,39 @@ class RedisBackend(Backend):
             await self._redis.zadd(
                 self._schedule_key, {event_id: updated_event.next_retry_at.timestamp()}
             )
+        return updated_event
+
+    async def reap_stale_claims(self, limit: int = 100) -> int:
+        """Requeues or dead-letters events whose processing lease expired without the
+        worker that claimed them acking or failing them, most commonly because that
+        worker crashed mid-handler. This reuses `fail()`, so a reaped event counts as
+        a failed attempt toward `max_attempts` like any other failure, instead of
+        being retried forever by a handler that keeps crashing the same way.
+
+        hookrelay does not call this on its own: schedule it yourself, for example
+        every `claim_lease_seconds / 2`, from whatever periodic task runner you
+        already use. Returns how many stale claims were reaped.
+        """
+        now = datetime.now(timezone.utc).timestamp()
+        stale_ids = cast(
+            list[bytes | str],
+            await self._redis.zrangebyscore(
+                self._processing_key, min=0, max=now, start=0, num=limit
+            ),
+        )
+        reaped = 0
+        error = "stale claim: lease expired before the worker acked or failed it"
+        for raw_id in stale_ids:
+            event_id = self._decode(raw_id)
+            removed = await self._redis.zrem(self._processing_key, event_id)
+            if not removed:
+                continue  # acked, failed, or already reaped concurrently
+            try:
+                await self.fail(event_id, error)
+            except EventNotFoundError:
+                continue
+            reaped += 1
+        return reaped
 
     async def list_dead_letters(self, limit: int = 100, offset: int = 0) -> list[WebhookEvent]:
         end = offset + limit - 1
@@ -112,7 +164,7 @@ class RedisBackend(Backend):
         )
         events = []
         for raw_id in ids:
-            event_id = raw_id.decode() if isinstance(raw_id, bytes) else raw_id
+            event_id = self._decode(raw_id)
             event = await self._get_event(event_id)
             if event is not None:
                 events.append(event)

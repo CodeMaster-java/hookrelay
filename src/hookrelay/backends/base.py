@@ -34,9 +34,10 @@ class Backend(ABC):
         """Mark an event as successfully processed."""
 
     @abstractmethod
-    async def fail(self, event_id: str, error: str) -> None:
+    async def fail(self, event_id: str, error: str) -> WebhookEvent:
         """Record a failed processing attempt, scheduling a retry or moving the event
-        to the dead-letter queue once `max_attempts` is exhausted."""
+        to the dead-letter queue once `max_attempts` is exhausted. Returns the updated
+        event so callers can tell which of the two happened without a second lookup."""
 
     @abstractmethod
     async def list_dead_letters(self, limit: int = 100, offset: int = 0) -> list[WebhookEvent]:
