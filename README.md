@@ -84,6 +84,10 @@ gives you the strongest guarantees.
   and `requeue_dead_letter()` are meant to be wired into your own admin
   tooling.
 
+## Roadmap
+
+Planned improvements and deliberate non-goals live in [ROADMAP.md](ROADMAP.md).
+
 ## Example
 
 See [`examples/evolution_api_whatsapp`](examples/evolution_api_whatsapp) for a

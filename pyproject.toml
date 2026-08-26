@@ -42,9 +42,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SEU_USUARIO_GITHUB/hookrelay"
-Repository = "https://github.com/SEU_USUARIO_GITHUB/hookrelay"
-Issues = "https://github.com/SEU_USUARIO_GITHUB/hookrelay/issues"
+Homepage = "https://github.com/CodeMaster-Java/hookrelay"
+Repository = "https://github.com/CodeMaster-Java/hookrelay"
+Issues = "https://github.com/CodeMaster-Java/hookrelay/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hookrelay"]
