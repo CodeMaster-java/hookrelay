@@ -3,18 +3,12 @@
 Everything that was tracked here for v0.1 (stale-claim recovery for
 `RedisBackend`, retention/cleanup for `PostgresBackend` and `SQLiteBackend`,
 Prometheus metrics, a dead-letters CLI, concurrent handler execution, and a
-`SQLiteBackend`) shipped in v0.2. See the README's "How it works",
-"Maintenance", and "CLI" sections for how to use them.
+`SQLiteBackend`) shipped in v0.2. Rate limiting (`Worker(...,
+max_calls_per_second=N)`) shipped in v0.3. See the README's "How it works",
+"Maintenance", and "CLI" sections for how to use all of it.
 
-## Ideas for v0.3
+## Ideas for what's next
 
-- **Rate limiting / throttling in `Worker`.** Nothing today bounds how fast
-  claimed events are handed to the handler; a burst of due events can drive
-  a handler straight into a downstream provider's own rate limit. A
-  configurable throttle, for example `Worker(..., max_calls_per_second=N)`,
-  following the same pattern `concurrency` already established, would let a
-  handler that calls a rate-limited API stay under it without building that
-  logic itself.
 - **Framework adapters beyond FastAPI.**
   `hookrelay.fastapi.create_webhook_router()` is a thin adapter over
   `Backend.enqueue()` (verify signature, parse body, enqueue, return); the

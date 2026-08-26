@@ -61,8 +61,11 @@ project manages schema through Alembic.
 - **Worker**: polls the backend, calls your handler, and acks or fails the
   event based on whether the handler raised. `Worker(..., concurrency=N)`
   runs up to `N` handlers from the same claimed batch at once, bounded by an
-  `asyncio.Semaphore`; each event is still individually acked or failed, so
-  the retry and dead-letter contract doesn't change.
+  `asyncio.Semaphore`; `Worker(..., max_calls_per_second=N)` spaces out when
+  handlers start so your handler never calls a rate-limited downstream
+  provider faster than that, regardless of `concurrency`. Either way, each
+  event is still individually acked or failed, so the retry and dead-letter
+  contract doesn't change.
 - **RetryPolicy**: exponential backoff with jitter (`base_delay * multiplier
   ** attempt`, capped at `max_delay`), shared by every backend so retry
   behavior doesn't depend on which one you picked.
