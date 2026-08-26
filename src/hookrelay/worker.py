@@ -14,6 +14,29 @@ logger = logging.getLogger("hookrelay.worker")
 Handler = Callable[[WebhookEvent], Awaitable[None]]
 
 
+class _RateLimiter:
+    """Spaces out `acquire()` calls so no two start less than `1 / calls_per_second`
+    apart, on average. This is deliberately simpler than a token bucket: it never
+    lets a burst of queued work start faster than the configured rate, which is
+    the safer default when the goal is staying under a downstream provider's own
+    rate limit rather than maximizing throughput."""
+
+    def __init__(self, calls_per_second: float) -> None:
+        if calls_per_second <= 0:
+            raise ValueError("calls_per_second must be positive")
+        self._interval = 1.0 / calls_per_second
+        self._lock = asyncio.Lock()
+        self._next_allowed_at = 0.0
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = time.monotonic()
+            wait = self._next_allowed_at - now
+            self._next_allowed_at = max(now, self._next_allowed_at) + self._interval
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+
 class Worker:
     """Polls a backend for due events and runs `handler` for each one.
 
@@ -30,6 +53,7 @@ class Worker:
         batch_size: int = 10,
         poll_interval: float = 1.0,
         concurrency: int = 1,
+        max_calls_per_second: float | None = None,
         metrics: WorkerMetrics | None = None,
     ) -> None:
         if concurrency < 1:
@@ -39,6 +63,9 @@ class Worker:
         self._batch_size = batch_size
         self._poll_interval = poll_interval
         self._concurrency = concurrency
+        self._rate_limiter = (
+            _RateLimiter(max_calls_per_second) if max_calls_per_second is not None else None
+        )
         self._metrics = metrics
         self._running = False
 
@@ -46,8 +73,10 @@ class Worker:
         """Claims and processes a single batch. Returns how many events were claimed.
 
         Events within the batch run with at most `concurrency` handlers in flight
-        at once; each event is still individually acked or failed, so the retry
-        and dead-letter contract is unchanged by running them concurrently."""
+        at once, and if `max_calls_per_second` is set, no two handlers start less
+        than `1 / max_calls_per_second` apart; each event is still individually
+        acked or failed, so the retry and dead-letter contract is unchanged by
+        either of these."""
         events = await self._backend.claim_due(self._batch_size)
         if events:
             semaphore = asyncio.Semaphore(self._concurrency)
@@ -56,6 +85,8 @@ class Worker:
 
     async def _process(self, event: WebhookEvent, semaphore: asyncio.Semaphore) -> None:
         async with semaphore:
+            if self._rate_limiter is not None:
+                await self._rate_limiter.acquire()
             start = time.monotonic()
             try:
                 await self._handler(event)
