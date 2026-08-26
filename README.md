@@ -1,5 +1,10 @@
 # hookrelay
 
+[![CI](https://github.com/CodeMaster-java/hookrelay/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeMaster-java/hookrelay/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/hookrelay.svg)](https://pypi.org/project/hookrelay/)
+[![Python versions](https://img.shields.io/pypi/pyversions/hookrelay.svg)](https://pypi.org/project/hookrelay/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Reliable webhook processing for Python: automatic retries with exponential
 backoff, a dead-letter queue for events that never succeed, and idempotency so
 duplicate deliveries are not processed twice.
