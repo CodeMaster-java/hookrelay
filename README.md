@@ -21,6 +21,7 @@ failing lands in a dead-letter queue instead of disappearing.
 
 ```bash
 pip install hookrelay[fastapi,postgres]   # or [redis] / [sqlite] instead of [postgres]
+pip install hookrelay[flask,sqlite]       # or [django] instead of [flask]
 pip install hookrelay[metrics]            # optional: Prometheus metrics for Worker
 ```
 
@@ -51,6 +52,45 @@ await worker.run_forever()
 On startup, create the table once with `await backend.init_schema()`, or
 generate a migration from `hookrelay.backends.postgres.metadata` if your
 project manages schema through Alembic.
+
+## Quickstart (Flask)
+
+```python
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from hookrelay.backends.sqlite import SQLiteBackend
+from hookrelay.flask import create_webhook_blueprint
+
+engine = create_async_engine("sqlite+aiosqlite:///webhooks.db")
+backend = SQLiteBackend(engine)
+
+blueprint = create_webhook_blueprint(backend=backend, source="evolution-api")
+app.register_blueprint(blueprint, url_prefix="/webhooks/whatsapp")
+```
+
+Requires the `flask[async]` extra (Flask's `async def` view support) in
+addition to whichever backend extra you use.
+
+## Quickstart (Django)
+
+```python
+# urls.py
+from sqlalchemy.ext.asyncio import create_async_engine
+from django.urls import path
+
+from hookrelay.backends.sqlite import SQLiteBackend
+from hookrelay.django import create_webhook_view
+
+engine = create_async_engine("sqlite+aiosqlite:///webhooks.db")
+backend = SQLiteBackend(engine)
+
+urlpatterns = [
+    path("webhooks/whatsapp/", create_webhook_view(backend=backend, source="evolution-api")),
+]
+```
+
+The view is exempt from Django's CSRF protection since a webhook carries no
+session cookie to protect.
 
 ## How it works
 
