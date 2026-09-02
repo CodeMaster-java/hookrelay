@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Robson Carvalho" }]
-keywords = ["webhook", "retry", "dead-letter-queue", "fastapi", "asyncio", "reliability"]
+keywords = ["webhook", "retry", "dead-letter-queue", "fastapi", "flask", "django", "asyncio", "reliability"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -20,6 +20,9 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Framework :: AsyncIO",
+    "Framework :: FastAPI",
+    "Framework :: Flask",
+    "Framework :: Django",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Internet :: WWW/HTTP",
 ]

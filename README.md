@@ -110,8 +110,9 @@ session cookie to protect.
   ** attempt`, capped at `max_delay`), shared by every backend so retry
   behavior doesn't depend on which one you picked.
 - **Idempotency**: pass `idempotency_key` when building a `WebhookEvent` (or
-  an `idempotency_key` extractor to `create_webhook_router`) and a second
-  delivery with the same key is a no-op.
+  an `idempotency_key` extractor to any of the framework adapters:
+  `create_webhook_router`, `create_webhook_blueprint`, `create_webhook_view`)
+  and a second delivery with the same key is a no-op.
 - **Dead-letter queue**: once `max_attempts` is exhausted, an event moves to
   `EventStatus.DEAD_LETTER`. Inspect it with `backend.list_dead_letters()`
   and retry it manually with `backend.requeue_dead_letter(event_id)`, or
