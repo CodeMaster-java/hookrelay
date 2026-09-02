@@ -31,6 +31,7 @@ redis = ["redis>=5.0"]
 sqlite = ["sqlalchemy[asyncio]>=2.0", "aiosqlite>=0.19"]
 fastapi = ["fastapi>=0.100"]
 flask = ["flask[async]>=2.3"]
+django = ["django>=4.2"]
 metrics = ["prometheus-client>=0.20"]
 dev = [
     "pytest>=8.0",
@@ -44,6 +45,7 @@ dev = [
     "redis>=5.0",
     "fastapi>=0.100",
     "flask[async]>=2.3",
+    "django>=4.2",
     "prometheus-client>=0.20",
 ]
 
